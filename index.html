@@ -891,9 +891,9 @@ function initTheme(){
 
 /* ── Primary index ─────────────────────────────────────────────── */
 function getPrimaryIndex(){
-  var ist=new Date(new Date().toLocaleString('en-US',{timeZone:'Asia/Kolkata'}));
-  var day=ist.getDay(); /* 0=Sun,1=Mon,2=Tue,3=Wed,4=Thu,5=Fri,6=Sat */
-  var pastClose=ist.getHours()>15||(ist.getHours()===15&&ist.getMinutes()>=30);
+  var ist=getISTDate();
+  var day=ist.day;
+  var pastClose=ist.hours>15||(ist.hours===15&&ist.minutes>=30);
   /*
    * Sensex expires on Thursday (day 4).
    * Nifty expires on Tuesday (day 2).
@@ -990,14 +990,41 @@ function setView(v){
 }
 
 /* ── Expiry helpers ────────────────────────────────────────────── */
+function getISTDate(){
+  /* Returns IST components using Intl.DateTimeFormat — avoids the
+     toLocaleString+new Date() timezone hack that gives wrong .getDay()
+     after midnight IST (e.g. 12:02 AM Friday IST still reads Thursday UTC) */
+  var now=new Date();
+  var fmt=new Intl.DateTimeFormat('en-CA',{
+    timeZone:'Asia/Kolkata',
+    year:'numeric',month:'2-digit',day:'2-digit',
+    hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false
+  });
+  var parts={};
+  fmt.formatToParts(now).forEach(function(p){parts[p.type]=parseInt(p.value,10);});
+  var istMidnight=new Date(Date.UTC(parts.year,parts.month-1,parts.day));
+  return{
+    year:parts.year,month:parts.month,date:parts.day,
+    day:istMidnight.getUTCDay(),
+    hours:parts.hour,minutes:parts.minute,
+    isoDate:istMidnight.toISOString().split('T')[0]
+  };
+}
+
 function getUpcomingDays(targetDay,count){
-  var results=[],d=new Date(),day=d.getDay();
+  var ist=getISTDate();
+  var day=ist.day;
   var diff=(targetDay-day+7)%7;
   if(diff===0){
-    var ist=new Date(d.toLocaleString('en-US',{timeZone:'Asia/Kolkata'}));
-    if(ist.getHours()>15||(ist.getHours()===15&&ist.getMinutes()>=30))diff=7;
+    if(ist.hours>15||(ist.hours===15&&ist.minutes>=30))diff=7;
   }
-  for(var i=0;i<count;i++){var copy=new Date(d);copy.setDate(d.getDate()+diff+i*7);results.push(copy.toISOString().split('T')[0]);}
+  var results=[];
+  var base=new Date(ist.isoDate+'T00:00:00Z');
+  for(var i=0;i<count;i++){
+    var copy=new Date(base);
+    copy.setUTCDate(base.getUTCDate()+diff+i*7);
+    results.push(copy.toISOString().split('T')[0]);
+  }
   return results;
 }
 function formatExpiry(dateStr){
@@ -1008,11 +1035,11 @@ function formatExpiry(dateStr){
 async function loadExpiryList(inst,token,clientId){
   var cfg=INSTRUMENTS[inst],variants=cfg.scripVariants;
   /* Determine cutoff: if past 3:30 PM IST today, skip today's date */
-  var ist=new Date(new Date().toLocaleString('en-US',{timeZone:'Asia/Kolkata'}));
-  var pastClose=ist.getHours()>15||(ist.getHours()===15&&ist.getMinutes()>=30);
-  var today=ist.toISOString().split('T')[0];
+  var ist=getISTDate();
+  var pastClose=ist.hours>15||(ist.hours===15&&ist.minutes>=30);
+  var today=ist.isoDate;
   var cutoff=pastClose
-    ?(function(){var t=new Date(ist);t.setDate(t.getDate()+1);return t.toISOString().split('T')[0];})()
+    ?(function(){var t=new Date(today+'T00:00:00Z');t.setUTCDate(t.getUTCDate()+1);return t.toISOString().split('T')[0];})()
     :today;
   for(var v of variants){
     try{
@@ -1885,11 +1912,11 @@ function logLiveFetch(){
 
 /* EOD auto-snapshot at 3:30 PM IST */
 function checkEOD(){
-  var ist=new Date(new Date().toLocaleString('en-US',{timeZone:'Asia/Kolkata'}));
-  var h=ist.getHours(),m=ist.getMinutes();
+  var ist=getISTDate();
+  var h=ist.hours,m=ist.minutes;
   /* Trigger window: 15:30 to 15:34 */
   if(h===15&&m>=30&&m<=34){
-    var todayKey=EOD_TRIGGERED_KEY+ist.toISOString().split('T')[0];
+    var todayKey=EOD_TRIGGERED_KEY+ist.isoDate;
     try{
       if(!localStorage.getItem(todayKey)){
         /* Only trigger if we have live data */
@@ -1901,7 +1928,7 @@ function checkEOD(){
           log('✅ EOD snapshot saved at 3:30 PM IST');
 
           /* On expiry day, advance to next week's expiry */
-          var day=ist.getDay(); /* 0=Sun,1=Mon,...,6=Sat */
+          var day=ist.day; /* 0=Sun,1=Mon,...,6=Sat */
           /* Nifty expires Tuesday (day 2), Sensex expires Thursday (day 4) */
           if(day===2){
             /* It's Tuesday — Nifty expiry day: advance Nifty to next week */
@@ -1920,9 +1947,9 @@ function checkEOD(){
 /* Advance expiry dropdown to next week — only if today is this instrument's expiry day and past close */
 function advanceToNextExpiry(inst){
   var cfg=INSTRUMENTS[inst];
-  var ist=new Date(new Date().toLocaleString('en-US',{timeZone:'Asia/Kolkata'}));
-  var day=ist.getDay();
-  var pastClose=ist.getHours()>15||(ist.getHours()===15&&ist.getMinutes()>=30);
+  var ist=getISTDate();
+  var day=ist.day;
+  var pastClose=ist.hours>15||(ist.hours===15&&ist.minutes>=30);
   /* Only advance if today IS this instrument's expiry day and market is closed */
   if(!pastClose||day!==cfg.expiryDay)return;
   var dates=getUpcomingDays(cfg.expiryDay,5);
@@ -1940,8 +1967,8 @@ function checkAndAdvanceExpiry(){
 
 /* ── Market hours check ────────────────────────────────────────── */
 function isMarketOpen(){
-  var ist=new Date(new Date().toLocaleString('en-US',{timeZone:'Asia/Kolkata'}));
-  var h=ist.getHours(),m=ist.getMinutes(),day=ist.getDay();
+  var ist=getISTDate();
+  var h=ist.hours,m=ist.minutes,day=ist.day;
   /* Mon–Fri only, 9:15 AM to 3:30 PM IST */
   if(day===0||day===6)return false;
   var mins=h*60+m;
@@ -2049,8 +2076,7 @@ function renderSetupTFVerdict(){
   /* ── Setup TF rolling verdict ── */
   var N = setupTFMinutes;
   /* Only use 'live' type snapshots from today for the rolling window */
-  var ist = new Date(new Date().toLocaleString('en-US',{timeZone:'Asia/Kolkata'}));
-  var todayStr = ist.toLocaleDateString('en-IN',{timeZone:'Asia/Kolkata',day:'2-digit',month:'short',year:'numeric'});
+  var todayStr = new Date().toLocaleDateString('en-IN',{timeZone:'Asia/Kolkata',day:'2-digit',month:'short',year:'numeric'});
   var todaySnaps = sessionLog.filter(function(s){
     return s.type === 'live' && s.date === todayStr;
   });
