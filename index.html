@@ -898,6 +898,7 @@ function updateVIXChip(vix){
 }
 var expiryListCache = {};
 var lastFetchTime = null;
+var vixFetchedAt = null;
 var isAutoOn = false;
 var manualExpiryOverride = {nifty: false, sensex: false}; /* tracks if user manually changed expiry */
 
@@ -1255,7 +1256,7 @@ async function fetchBoth(){
   populateSelect('sensex_expiry',sE,'Sensex');
   checkAndAdvanceExpiry(); /* advance if fetching post-close on expiry day */
   vixGlobal=await fetchVIX(token,clientId);
-  if(vixGlobal!=null) updateVIXChip(vixGlobal);
+  if(vixGlobal!=null){ vixFetchedAt=Date.now(); updateVIXChip(vixGlobal); }
   await Promise.all([fetchInstrument('nifty',token,clientId),fetchInstrument('sensex',token,clientId)]);
   setLoading(false);
   lastFetchTime=Date.now();
@@ -1273,9 +1274,14 @@ async function fetchBoth(){
 async function fetchInstrument(inst,token,clientId){
   if(!token){token=document.getElementById('access_token').value.trim();clientId=document.getElementById('client_id').value.trim();}
   if(!token||!clientId)return;
-  /* Always fetch fresh VIX so skew calculations use the real current value */
-  var freshVIX=await fetchVIX(token,clientId);
-  if(freshVIX!=null){ vixGlobal=freshVIX; updateVIXChip(freshVIX); }
+  /* Only fetch fresh VIX when called standalone (individual Fetch button).
+     fetchBoth already fetches VIX before calling this, so skip if vixGlobal
+     was updated within the last 10 seconds to avoid 3× VIX calls per cycle. */
+  var vixAge = vixFetchedAt ? (Date.now() - vixFetchedAt) : Infinity;
+  if(vixAge > 10000){
+    var freshVIX=await fetchVIX(token,clientId);
+    if(freshVIX!=null){ vixGlobal=freshVIX; vixFetchedAt=Date.now(); updateVIXChip(freshVIX); }
+  }
   var cfg=INSTRUMENTS[inst],expiry=document.getElementById(inst+'_expiry').value;
   var errEl=document.getElementById(inst+'_err');errEl.style.display='none';
   log('─── Fetching '+inst+' expiry='+expiry+' ───');
@@ -1362,7 +1368,6 @@ function renderPanel(inst,r,vix){
   else if(vix<=12){regime='Very low';note='VIX <12 — Cheap options but slower moves.';}
   else{regime='Normal';note='VIX 12–17 — Standard thresholds. Good environment.';}
 
-  var sc=adj>=6.5?'var(--red)':adj>=3.5?'var(--orange)':Math.abs(adj)>=3.5?'var(--green)':'var(--gray)';
   var html='';
 
   /* Sentiment row */
@@ -1445,6 +1450,13 @@ function renderPanel(inst,r,vix){
   document.getElementById(inst+'_empty').style.display='none';
   var dataEl=document.getElementById(inst+'_data');
   dataEl.innerHTML=html;dataEl.style.display='block';
+
+  /* Store computed values as data attributes — used by captureInst for reliable snapshot capture */
+  dataEl.dataset.putIv    = putIV.toFixed(2);
+  dataEl.dataset.callIv   = isSmile&&wideCallIV ? wideCallIV.toFixed(2) : callIV.toFixed(2);
+  dataEl.dataset.skew     = skew.toFixed(2);
+  dataEl.dataset.wingRatio= ratio.toFixed(2);
+  dataEl.dataset.sentiment= sentiment;
 
   var skewLabel=isSmile?('Smile·'+(smileBias==='bull'?'PutTrap':smileBias==='bear'?'CallTrap':'Both')):((skew>=0?'+':'')+skew.toFixed(2));
   if(inst==='nifty')document.getElementById('st_nifty').textContent=spot+' | '+skewLabel;
@@ -1630,23 +1642,32 @@ function captureSnapshot(type){
 }
 
 function captureInst(inst){
-  /* Pull rendered values back from DOM — cheapest approach, no re-parse needed */
   var dataEl=document.getElementById(inst+'_data');
   if(!dataEl||dataEl.style.display==='none')return null;
+
   /* Spot & expiry from spot-info div */
   var spotEl=dataEl.querySelector('.spot-info');
   var spotText=spotEl?spotEl.textContent:'';
   var spotMatch=spotText.match(/Spot:\s*([\d.]+)/);
   var expiryMatch=spotText.match(/Expiry:\s*(\S+)/);
+
   /* Sentiment pill */
   var pillEl=dataEl.querySelector('.sent-pill');
   var sentiment=pillEl?pillEl.textContent.trim():'—';
-  /* Skew/metrics — grab all metric .mv values */
+
+  /* IV values — read from data attributes set by renderPanel (reliable, no DOM color hacks) */
+  var putIV  = dataEl.dataset.putIv   || '—';
+  var callIV = dataEl.dataset.callIv  || '—';
+  var skew   = dataEl.dataset.skew    || '—';
+  var wingRatio = dataEl.dataset.wingRatio || '—';
+
+  /* VIX regime from metrics grid */
   var metrics={};
   dataEl.querySelectorAll('.metric').forEach(function(m){
     var lbl=m.querySelector('.ml');var val=m.querySelector('.mv');
     if(lbl&&val)metrics[lbl.textContent.trim()]=val.textContent.trim();
   });
+
   /* Action boxes */
   var boxes=dataEl.querySelectorAll('.action-box');
   var ceBox=boxes[0],peBox=boxes[1];
@@ -1654,11 +1675,11 @@ function captureInst(inst){
     spot:spotMatch?spotMatch[1]:'—',
     expiry:expiryMatch?expiryMatch[1]:'—',
     sentiment:sentiment,
-    skew:metrics['Skew (put−call)']||metrics['Smile type']||'—',
-    wingRatio:metrics['Wing ratio']||'—',
+    skew:skew,
+    wingRatio:wingRatio,
     vixRegime:metrics['VIX regime']||'—',
-    putIV:dataEl.querySelector('.sv[style*="red"]')?dataEl.querySelector('.sv[style*="red"]').textContent:'—',
-    callIV:dataEl.querySelector('.sv[style*="green"]')?dataEl.querySelector('.sv[style*="green"]').textContent:'—',
+    putIV:putIV,
+    callIV:callIV,
     ceAction:ceBox?ceBox.querySelector('.av').textContent.trim():'—',
     peAction:peBox?peBox.querySelector('.av').textContent.trim():'—',
     ceClass:ceBox?ceBox.className:'',
