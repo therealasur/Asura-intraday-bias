@@ -1016,7 +1016,7 @@ async function loadExpiryList(inst,token,clientId){
     :today;
   for(var v of variants){
     try{
-      var r=await fetch('https://dhan-proxy.asurthedropouttrader.workers.dev//v2/optionchain/expirylist',{
+      var r=await fetch('https://dhan-proxy.asurthedropouttrader.workers.dev/v2/optionchain/expirylist',{
         method:'POST',headers:{'Content-Type':'application/json','access-token':token,'client-id':clientId},
         body:JSON.stringify({UnderlyingScrip:v.UnderlyingScrip,UnderlyingSeg:v.UnderlyingSeg})
       });
@@ -1056,7 +1056,7 @@ function populateSelect(selectId,dates,label){
 
 /* ── API ───────────────────────────────────────────────────────── */
 async function fetchOptionChain(token,clientId,underlyingScrip,underlyingSeg,expiry){
-  var r=await fetch('https://dhan-proxy.asurthedropouttrader.workers.dev//v2/optionchain',{
+  var r=await fetch('https://dhan-proxy.asurthedropouttrader.workers.dev/v2/optionchain',{
     method:'POST',headers:{'Content-Type':'application/json','access-token':token,'client-id':clientId},
     body:JSON.stringify({UnderlyingScrip:underlyingScrip,UnderlyingSeg:underlyingSeg,Expiry:expiry})
   });
@@ -1068,7 +1068,7 @@ async function fetchOptionChain(token,clientId,underlyingScrip,underlyingSeg,exp
 }
 async function fetchVIX(token,clientId){
   try{
-    var r=await fetch('https://dhan-proxy.asurthedropouttrader.workers.dev//v2/marketfeed/ltp',{
+    var r=await fetch('https://dhan-proxy.asurthedropouttrader.workers.dev/v2/marketfeed/ltp',{
       method:'POST',headers:{'Content-Type':'application/json','access-token':token,'client-id':clientId},
       body:JSON.stringify({IDX_I:[12]})
     });
