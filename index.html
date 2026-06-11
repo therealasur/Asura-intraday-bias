@@ -565,6 +565,27 @@ body.light .btn:hover{background:var(--bg4);}
   .tf-verdict-strip{gap:10px;}
   .tf-divider{display:none;}
 }
+
+/* ── Live VIX chip ───────────────────────────────────────────────── */
+.vix-chip{
+  display:inline-flex;align-items:center;gap:5px;
+  padding:4px 11px;border-radius:20px;font-size:11px;font-weight:700;
+  border:1px solid var(--border2);background:var(--bg3);
+  letter-spacing:0.2px;cursor:default;white-space:nowrap;
+  transition:background 0.4s,border-color 0.4s,color 0.4s;
+}
+.vix-chip-val{font-family:'JetBrains Mono',monospace;font-size:12px;}
+.vix-chip-regime{font-size:9px;font-weight:600;text-transform:uppercase;letter-spacing:0.6px;opacity:0.85;}
+.vix-chip.regime-normal {background:var(--teal-bg);border-color:var(--teal-border);color:var(--teal);}
+.vix-chip.regime-elevated{background:var(--orange-bg);border-color:var(--orange-border);color:var(--orange);}
+.vix-chip.regime-high   {background:var(--red-bg);border-color:var(--red-border);color:var(--red);}
+.vix-chip.regime-verylow{background:var(--gray-bg);border-color:var(--gray-border);color:var(--gray);}
+@keyframes vixFlash{
+  0%{transform:scale(1);}25%{transform:scale(1.22);}
+  60%{transform:scale(0.92);}80%{transform:scale(1.08);}100%{transform:scale(1);}
+}
+.vix-chip.regime-changed{animation:vixFlash 0.65s ease;}
+@media(max-width:600px){.vix-chip-regime{display:none;}}
 </style>
 </head>
 <body>
@@ -580,6 +601,11 @@ body.light .btn:hover{background:var(--bg4);}
     <div id="live_badge" class="status-badge badge-idle">
       <span class="dot dot-gray" id="live_dot"></span>
       <span id="live_text">Not fetched</span>
+    </div>
+    <div class="vix-chip" id="vix_chip" title="India VIX — refreshes every fetch">
+      <span>VIX</span>
+      <span class="vix-chip-val" id="vix_chip_val">—</span>
+      <span class="vix-chip-regime" id="vix_chip_regime">—</span>
     </div>
     <span id="last_update" style="font-size:11px;color:var(--text3);"></span>
     <div class="spinner" id="spinner"></div>
@@ -840,6 +866,36 @@ var autoTimer = null;
 var debugLines = [];
 var currentView = 'both';
 var vixGlobal = null;
+var vixRegimePrev = null; /* tracks last known regime to detect changes */
+
+/* ── VIX chip updater ──────────────────────────────────────────────── */
+function updateVIXChip(vix){
+  var chip  = document.getElementById('vix_chip');
+  var valEl = document.getElementById('vix_chip_val');
+  var regEl = document.getElementById('vix_chip_regime');
+  var stEl  = document.getElementById('st_vix');
+  if(!chip || vix == null) return;
+  var regime, label;
+  if(vix >= 20)      { regime = 'high';     label = 'HIGH ⚠'; }
+  else if(vix >= 17) { regime = 'elevated'; label = 'ELEVATED'; }
+  else if(vix <= 12) { regime = 'verylow';  label = 'VERY LOW'; }
+  else               { regime = 'normal';   label = 'NORMAL'; }
+  valEl.textContent = vix.toFixed(2);
+  regEl.textContent = label;
+  if(stEl) stEl.textContent = vix.toFixed(2) + ' · ' + label;
+  chip.className = 'vix-chip regime-' + regime;
+  /* Flash + log only when regime actually changes */
+  if(vixRegimePrev !== null && vixRegimePrev !== regime){
+    chip.classList.add('regime-changed');
+    chip.addEventListener('animationend', function(){
+      chip.classList.remove('regime-changed');
+    }, {once: true});
+    log('⚠️ VIX REGIME CHANGED: ' + vixRegimePrev.toUpperCase()
+        + ' → ' + regime.toUpperCase()
+        + ' (VIX ' + vix.toFixed(2) + ')');
+  }
+  vixRegimePrev = regime;
+}
 var expiryListCache = {};
 var lastFetchTime = null;
 var isAutoOn = false;
@@ -1199,6 +1255,7 @@ async function fetchBoth(){
   populateSelect('sensex_expiry',sE,'Sensex');
   checkAndAdvanceExpiry(); /* advance if fetching post-close on expiry day */
   vixGlobal=await fetchVIX(token,clientId);
+  if(vixGlobal!=null) updateVIXChip(vixGlobal);
   await Promise.all([fetchInstrument('nifty',token,clientId),fetchInstrument('sensex',token,clientId)]);
   setLoading(false);
   lastFetchTime=Date.now();
@@ -1216,6 +1273,9 @@ async function fetchBoth(){
 async function fetchInstrument(inst,token,clientId){
   if(!token){token=document.getElementById('access_token').value.trim();clientId=document.getElementById('client_id').value.trim();}
   if(!token||!clientId)return;
+  /* Always fetch fresh VIX so skew calculations use the real current value */
+  var freshVIX=await fetchVIX(token,clientId);
+  if(freshVIX!=null){ vixGlobal=freshVIX; updateVIXChip(freshVIX); }
   var cfg=INSTRUMENTS[inst],expiry=document.getElementById(inst+'_expiry').value;
   var errEl=document.getElementById(inst+'_err');errEl.style.display='none';
   log('─── Fetching '+inst+' expiry='+expiry+' ───');
