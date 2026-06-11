@@ -779,6 +779,28 @@ body.light .btn:hover{background:var(--bg4);}
   </div>
 </div>
 
+<!-- ── Fetch Error Alert Modal ────────────────────────────────────── -->
+<div class="modal-overlay" id="fetch_err_modal">
+  <div class="modal-box" style="border-color:var(--red-border);">
+    <div class="modal-icon" id="ferr_icon">🚫</div>
+    <div class="modal-title" id="ferr_title" style="color:var(--red);">Data Fetch Failed</div>
+    <div class="modal-body" id="ferr_body"></div>
+    <div class="modal-sub" id="ferr_sub"></div>
+    <div id="ferr_detail_wrap" style="display:none;margin-bottom:16px;">
+      <div style="font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:0.7px;color:var(--text3);margin-bottom:5px;">Technical detail</div>
+      <div id="ferr_detail" style="font-size:11px;font-family:'JetBrains Mono',monospace;background:var(--bg3);border:1px solid var(--border2);border-radius:var(--radius-xs);padding:8px 10px;color:var(--text2);white-space:pre-wrap;word-break:break-all;max-height:90px;overflow-y:auto;"></div>
+    </div>
+    <div style="background:var(--red-bg);border:1px solid var(--red-border);border-radius:var(--radius-sm);padding:10px 14px;margin-bottom:20px;">
+      <div style="font-size:11px;font-weight:700;color:var(--red);margin-bottom:4px;">⚠ DO NOT TRADE ON STALE DATA</div>
+      <div style="font-size:11px;color:var(--text2);line-height:1.5;" id="ferr_action"></div>
+    </div>
+    <div class="modal-btns">
+      <button class="modal-btn" onclick="dismissFetchErr()">Dismiss</button>
+      <button class="modal-btn modal-btn-primary" onclick="retryFetch()">⚡ Retry Fetch</button>
+    </div>
+  </div>
+</div>
+
 <!-- ── Session Logger ────────────────────────────────────────────── -->
 <div class="page" style="padding-top:0;">
   <div class="logger-card">
@@ -1242,32 +1264,68 @@ function parseOC(data,inst){
          ceChgCount,peChgCount};
 }
 
-/* ── Fetch orchestrator ────────────────────────────────────────── */
+var _fetchingBoth=false;
 async function fetchBoth(){
   var token=document.getElementById('access_token').value.trim();
   var clientId=document.getElementById('client_id').value.trim();
   if(!token||!clientId){showErr('Please enter Access Token and Client ID.');return;}
   setLoading(true);
+  _fetchingBoth=true;
+  fetchInstrument._lastErr={};
   document.getElementById('err_msg').style.display='none';
   setView(currentView);
   log('Loading expiry lists...');
-  var [nE,sE]=await Promise.all([loadExpiryList('nifty',token,clientId),loadExpiryList('sensex',token,clientId)]);
-  populateSelect('nifty_expiry',nE,'Nifty');
-  populateSelect('sensex_expiry',sE,'Sensex');
-  checkAndAdvanceExpiry(); /* advance if fetching post-close on expiry day */
-  vixGlobal=await fetchVIX(token,clientId);
-  if(vixGlobal!=null){ vixFetchedAt=Date.now(); updateVIXChip(vixGlobal); }
-  await Promise.all([fetchInstrument('nifty',token,clientId),fetchInstrument('sensex',token,clientId)]);
-  setLoading(false);
-  lastFetchTime=Date.now();
-  document.getElementById('last_update').textContent='Updated '+new Date().toLocaleTimeString('en-IN');
-  document.getElementById('st_time').textContent=new Date().toLocaleTimeString('en-IN');
-  refreshBadge();
-  /* Only log snapshots during market hours */
-  if(isMarketOpen()){
-    logLiveFetch();
-  } else {
-    log('Fetch outside market hours — snapshot not saved');
+  try{
+    var [nE,sE]=await Promise.all([loadExpiryList('nifty',token,clientId),loadExpiryList('sensex',token,clientId)]);
+    populateSelect('nifty_expiry',nE,'Nifty');
+    populateSelect('sensex_expiry',sE,'Sensex');
+    checkAndAdvanceExpiry(); /* advance if fetching post-close on expiry day */
+    vixGlobal=await fetchVIX(token,clientId);
+    if(vixGlobal!=null){ vixFetchedAt=Date.now(); updateVIXChip(vixGlobal); }
+    /* Run both instruments and collect any errors */
+    var fetchResults=await Promise.allSettled([
+      fetchInstrument('nifty',token,clientId),
+      fetchInstrument('sensex',token,clientId)
+    ]);
+    /* Check if either panel ended up in error state (no data rendered) */
+    var failedInsts=[];
+    ['nifty','sensex'].forEach(function(inst,i){
+      var dataEl=document.getElementById(inst+'_data');
+      var errEl=document.getElementById(inst+'_err');
+      var dataVisible=dataEl&&dataEl.style.display!=='none';
+      /* If the promise rejected, or the err div is visible with text */
+      if(fetchResults[i].status==='rejected'||(errEl&&errEl.style.display!=='none'&&errEl.textContent)){
+        failedInsts.push(inst.charAt(0).toUpperCase()+inst.slice(1));
+      }
+    });
+    if(failedInsts.length>0){
+      /* Use the raw error captured directly in fetchInstrument — no log scraping */
+      var errMsgs=[];
+      ['nifty','sensex'].forEach(function(inst){
+        var e=fetchInstrument._lastErr&&fetchInstrument._lastErr[inst];
+        if(e)errMsgs.push(e);
+      });
+      var bestErr=errMsgs[0]||'';
+      showFetchErrModal(bestErr, failedInsts.join(' & '));
+    }
+    setLoading(false);
+    _fetchingBoth=false;
+    lastFetchTime=Date.now();
+    document.getElementById('last_update').textContent='Updated '+new Date().toLocaleTimeString('en-IN');
+    document.getElementById('st_time').textContent=new Date().toLocaleTimeString('en-IN');
+    refreshBadge();
+    /* Only log snapshots during market hours */
+    if(isMarketOpen()){
+      logLiveFetch();
+    } else {
+      log('Fetch outside market hours — snapshot not saved');
+    }
+  }catch(e){
+    /* Top-level catch — catastrophic failure (network down, GitHub Pages unreachable, etc.) */
+    setLoading(false);
+    _fetchingBoth=false;
+    showFetchErrModal(e.message||String(e), 'Nifty & Sensex');
+    refreshBadge();
   }
 }
 
@@ -1287,20 +1345,26 @@ async function fetchInstrument(inst,token,clientId){
   log('─── Fetching '+inst+' expiry='+expiry+' ───');
   var variants=expiryListCache[inst]?[{UnderlyingScrip:expiryListCache[inst].scrip,UnderlyingSeg:expiryListCache[inst].seg}]:cfg.scripVariants;
   var result=null;
+  var lastRawErr='';
   for(var v of variants){
     try{
       var raw=await fetchOptionChain(token,clientId,v.UnderlyingScrip,v.UnderlyingSeg,expiry);
       result=parseOC(raw,inst);
       if(result){if(!expiryListCache[inst])expiryListCache[inst]={scrip:v.UnderlyingScrip,seg:v.UnderlyingSeg};break;}
-    }catch(e){log(inst+' variant error: '+e.message);}
+    }catch(e){lastRawErr=e.message||String(e);log(inst+' variant error: '+lastRawErr);}
   }
   var vix=vixGlobal||14.5;
   if(result){renderPanel(inst,result,vix);}
   else{
     document.getElementById(inst+'_empty').style.display='none';
     document.getElementById(inst+'_data').style.display='none';
-    errEl.textContent='Could not fetch '+cfg.label+' data.\nCheck debug log for details.';
+    errEl.textContent='Could not fetch '+cfg.label+' data. See error alert for details.';
     errEl.style.display='block';
+    fetchInstrument._lastErr=fetchInstrument._lastErr||{};
+    fetchInstrument._lastErr[inst]=lastRawErr;
+    if(!_fetchingBoth){
+      showFetchErrModal(lastRawErr, cfg.label);
+    }
   }
 }
 
@@ -2291,6 +2355,101 @@ function setLoading(s){
   });
 }
 function showErr(m){var e=document.getElementById('err_msg');e.textContent=m;e.style.display='block';}
+
+/* ── Fetch Error Alert ─────────────────────────────────────────── */
+function classifyFetchError(errMsg){
+  var m=errMsg||'';
+  if(/401|Authentication Failed|Client ID or Token|auth/i.test(m)){
+    return{
+      icon:'🔑',title:'Authentication Failure',
+      body:'Your Dhan access token or Client ID was rejected by the server.',
+      sub:'This usually means the token has expired (Dhan tokens expire daily) or it was copied incorrectly.',
+      action:'1. Go to Dhan HQ → Open API → regenerate a fresh access token.\n2. Paste the new token in the field above.\n3. Re-enter your Client ID and hit Fetch Both.'
+    };
+  }
+  if(/403|Forbidden/i.test(m)){
+    return{
+      icon:'🚫',title:'Access Forbidden (403)',
+      body:'The server refused the request — your token may be valid but lacks permission for this endpoint.',
+      sub:'This can happen if the Dhan API subscription has lapsed or the endpoint requires additional access.',
+      action:'1. Verify your Dhan Open API subscription is active.\n2. Regenerate the access token and try again.'
+    };
+  }
+  if(/HTML response|CORS|Cloudflare|cloudflare|503|502|504|upstream/i.test(m)){
+    return{
+      icon:'☁️',title:'Cloudflare / Proxy Error',
+      body:'The proxy worker returned an HTML error page instead of JSON data.',
+      sub:'This typically means the Dhan API is down, under maintenance, or the Cloudflare worker is blocking the request.',
+      action:'1. Wait 2–5 minutes and retry — this is usually temporary.\n2. Check https://status.dhan.co for any outage.\n3. If it persists, the proxy worker may need redeployment.'
+    };
+  }
+  if(/Failed to fetch|NetworkError|net::ERR|fetch|CORS|Load failed|network/i.test(m)){
+    return{
+      icon:'📡',title:'Network / Connection Error',
+      body:'The browser could not reach the proxy server at all.',
+      sub:'You may be offline, or DNS/firewall is blocking the request. GitHub Pages itself could also be unreachable.',
+      action:'1. Check your internet connection.\n2. Try reloading the page (Ctrl+Shift+R / ⌘+Shift+R).\n3. Disable any VPN or firewall that might block workers.dev.\n4. Check if GitHub Pages is accessible: https://githubstatus.com'
+    };
+  }
+  if(/404/i.test(m)){
+    return{
+      icon:'🔍',title:'Endpoint Not Found (404)',
+      body:'The proxy URL returned a 404 — the API route may have changed or the worker is misconfigured.',
+      sub:'This is likely a configuration issue, not a temporary glitch.',
+      action:'1. Verify the proxy worker URL in the HTML source is correct.\n2. Redeploy the Cloudflare worker if you recently made changes.'
+    };
+  }
+  if(/500|Internal Server/i.test(m)){
+    return{
+      icon:'💥',title:'Server Error (500)',
+      body:'The Dhan API or proxy returned an internal server error.',
+      sub:'This is a server-side issue, not something on your end.',
+      action:'1. Wait a few minutes and retry.\n2. Check https://status.dhan.co for any reported issues.'
+    };
+  }
+  if(/timeout|Timeout|timed out/i.test(m)){
+    return{
+      icon:'⏱',title:'Request Timeout',
+      body:'The fetch request took too long and was aborted.',
+      sub:'The Dhan API or proxy may be slow under load, or your connection is congested.',
+      action:'1. Retry in 30–60 seconds.\n2. Check your internet speed.\n3. If happening repeatedly, the API may be under heavy load.'
+    };
+  }
+  /* Generic fallback */
+  return{
+    icon:'⚠️',title:'Data Fetch Failed',
+    body:'An unexpected error occurred while fetching market data.',
+    sub:'The exact error is shown below. Do not rely on any data currently displayed.',
+    action:'1. Check the debug log (Show debug log) for the full error trail.\n2. Verify your access token and Client ID are correct.\n3. Retry the fetch. If it keeps failing, wait a few minutes.'
+  };
+}
+
+var _fetchErrActive=false;
+function showFetchErrModal(errMsg, affected){
+  var c=classifyFetchError(errMsg);
+  document.getElementById('ferr_icon').textContent=c.icon;
+  document.getElementById('ferr_title').textContent=c.title+(affected?' — '+affected:'');
+  document.getElementById('ferr_body').textContent=c.body;
+  document.getElementById('ferr_sub').textContent=c.sub;
+  document.getElementById('ferr_action').textContent=c.action;
+  var det=document.getElementById('ferr_detail');
+  var detWrap=document.getElementById('ferr_detail_wrap');
+  if(errMsg){det.textContent=errMsg;detWrap.style.display='block';}
+  else{detWrap.style.display='none';}
+  document.getElementById('fetch_err_modal').classList.add('visible');
+  _fetchErrActive=true;
+  /* Also flip the badge to outdated immediately */
+  setLiveBadge('outdated');
+  log('🚨 FETCH ERROR ALERT: '+c.title+' | '+errMsg);
+}
+function dismissFetchErr(){
+  document.getElementById('fetch_err_modal').classList.remove('visible');
+  _fetchErrActive=false;
+}
+function retryFetch(){
+  dismissFetchErr();
+  fetchBoth();
+}
 
 /* ── Init ──────────────────────────────────────────────────────── */
 window.onload=function(){
