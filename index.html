@@ -630,7 +630,13 @@ body.light .btn:hover{background:var(--bg4);}
         </div>
         <div class="field">
           <label>Client ID</label>
-          <input type="text" id="client_id" placeholder="e.g. 1102114994" autocomplete="off"/>
+          <div style="display:flex;align-items:center;gap:8px;">
+            <input type="text" id="client_id" placeholder="e.g. 1102114994" autocomplete="off" style="flex:1;"/>
+            <label style="display:flex;align-items:center;gap:5px;cursor:pointer;white-space:nowrap;font-size:12px;color:var(--text2);user-select:none;">
+              <input type="checkbox" id="remember_cid" onchange="onRememberCID()" style="width:13px;height:13px;cursor:pointer;accent-color:var(--blue);"/>
+              Remember
+            </label>
+          </div>
         </div>
       </div>
       <div class="config-actions">
@@ -1265,13 +1271,21 @@ function parseOC(data,inst){
 }
 
 var _fetchingBoth=false;
+var _lastFetchErr={}; /* keyed by inst, set on failure, cleared each fetchBoth cycle */
 async function fetchBoth(){
   var token=document.getElementById('access_token').value.trim();
   var clientId=document.getElementById('client_id').value.trim();
   if(!token||!clientId){showErr('Please enter Access Token and Client ID.');return;}
+  /* Respect cooldown even when called by auto-refresh timer */
+  var fetchBtnCooldown=_cooldownTimers['fetch_btn']&&_cooldownTimers['fetch_btn'].until>Date.now();
+  if(fetchBtnCooldown&&_fetchingBoth===false){
+    var remaining=Math.ceil((_cooldownTimers['fetch_btn'].until-Date.now())/1000);
+    log('⏳ Rate limit: please wait '+remaining+'s before fetching again.');
+    return;
+  }
   setLoading(true);
   _fetchingBoth=true;
-  fetchInstrument._lastErr={};
+  _lastFetchErr={};
   document.getElementById('err_msg').style.display='none';
   setView(currentView);
   log('Loading expiry lists...');
@@ -1287,44 +1301,58 @@ async function fetchBoth(){
       fetchInstrument('nifty',token,clientId),
       fetchInstrument('sensex',token,clientId)
     ]);
-    /* Check if either panel ended up in error state (no data rendered) */
+    /* Check failures using _lastFetchErr — set only when a fetch actually fails */
     var failedInsts=[];
+    var errMsgs=[];
     ['nifty','sensex'].forEach(function(inst,i){
-      var dataEl=document.getElementById(inst+'_data');
-      var errEl=document.getElementById(inst+'_err');
-      var dataVisible=dataEl&&dataEl.style.display!=='none';
-      /* If the promise rejected, or the err div is visible with text */
-      if(fetchResults[i].status==='rejected'||(errEl&&errEl.style.display!=='none'&&errEl.textContent)){
+      /* Promise rejection is a hard failure */
+      if(fetchResults[i].status==='rejected'){
         failedInsts.push(inst.charAt(0).toUpperCase()+inst.slice(1));
+        errMsgs.push(fetchResults[i].reason&&fetchResults[i].reason.message||'Unknown error');
+      } else if(_lastFetchErr[inst]){
+        /* fetchInstrument ran but couldn't parse valid data */
+        failedInsts.push(inst.charAt(0).toUpperCase()+inst.slice(1));
+        errMsgs.push(_lastFetchErr[inst]);
       }
     });
     if(failedInsts.length>0){
-      /* Use the raw error captured directly in fetchInstrument — no log scraping */
-      var errMsgs=[];
-      ['nifty','sensex'].forEach(function(inst){
-        var e=fetchInstrument._lastErr&&fetchInstrument._lastErr[inst];
-        if(e)errMsgs.push(e);
-      });
-      var bestErr=errMsgs[0]||'';
-      showFetchErrModal(bestErr, failedInsts.join(' & '));
+      showFetchErrModal(errMsgs[0]||'', failedInsts.join(' & '));
     }
     setLoading(false);
     _fetchingBoth=false;
+    startCooldown(['fetch_btn','refresh_btn','nifty_fetch_btn','sensex_fetch_btn']);
     lastFetchTime=Date.now();
     document.getElementById('last_update').textContent='Updated '+new Date().toLocaleTimeString('en-IN');
     document.getElementById('st_time').textContent=new Date().toLocaleTimeString('en-IN');
     refreshBadge();
-    /* Only log snapshots during market hours */
-    if(isMarketOpen()){
-      logLiveFetch();
-    } else {
-      log('Fetch outside market hours — snapshot not saved');
+    /* Post-fetch UI updates — wrapped separately so JS bugs here don't trigger the fetch error modal */
+    try{
+      if(isMarketOpen()){
+        logLiveFetch();
+      } else {
+        log('Fetch outside market hours — snapshot not saved');
+      }
+    }catch(uiErr){
+      /* UI/rendering bug — log it but don't show the fetch error modal */
+      log('⚠️ Post-fetch UI error (data was fetched OK): '+uiErr.message);
+      console.error('Post-fetch UI error:', uiErr);
     }
   }catch(e){
-    /* Top-level catch — catastrophic failure (network down, GitHub Pages unreachable, etc.) */
+    /* Top-level catch — only reached for catastrophic fetch failures
+       (network down, Promise.allSettled itself throws, etc.)
+       Guard against accidental JS errors reaching the modal by checking
+       if the error looks like a fetch/network error */
     setLoading(false);
     _fetchingBoth=false;
-    showFetchErrModal(e.message||String(e), 'Nifty & Sensex');
+    startCooldown(['fetch_btn','refresh_btn','nifty_fetch_btn','sensex_fetch_btn']);
+    var isFetchErr=/fetch|network|HTTP|401|403|404|429|500|502|503|504|timeout|Failed to fetch|NetworkError/i.test(e.message||'');
+    if(isFetchErr){
+      showFetchErrModal(e.message||String(e), 'Nifty & Sensex');
+    } else {
+      /* JS bug — log it, don't alarm the trader */
+      log('⚠️ Unexpected JS error in fetchBoth: '+e.message);
+      console.error('fetchBoth JS error:', e);
+    }
     refreshBadge();
   }
 }
@@ -1360,16 +1388,23 @@ async function fetchInstrument(inst,token,clientId){
     document.getElementById(inst+'_data').style.display='none';
     errEl.textContent='Could not fetch '+cfg.label+' data. See error alert for details.';
     errEl.style.display='block';
-    fetchInstrument._lastErr=fetchInstrument._lastErr||{};
-    fetchInstrument._lastErr[inst]=lastRawErr;
+    _lastFetchErr[inst]=lastRawErr;
     if(!_fetchingBoth){
       showFetchErrModal(lastRawErr, cfg.label);
     }
+  }
+  /* Cooldown for individual fetch button — only when called standalone */
+  if(!_fetchingBoth){
+    var btnId=inst+'_fetch_btn';
+    startCooldown([btnId]);
   }
 }
 
 /* ── Render panel ──────────────────────────────────────────────── */
 function renderPanel(inst,r,vix){
+  /* Clear any stale error state from a previous failed cycle */
+  var _errEl=document.getElementById(inst+'_err');
+  if(_errEl){_errEl.style.display='none';_errEl.textContent='';}
   var{putIV,callIV,atmIV,atm,putStrike,callStrike,spot,widePutIV,wideCallIV,wideWingPts,
       atmCeOI,atmPeOI,totalCeOI,totalPeOI,totalCeChg,totalPeChg,pcr,totalPCR,
       ceChgCount,peChgCount}=r;
@@ -2163,6 +2198,7 @@ function refreshSetupTFLabels(){
    box-caution   = ±1, box-skip = opposite extreme, box-neutral = 0
    Returns: { ce: score, pe: score, dir: 'call'|'put'|'neutral'|'indecision' } */
 function classifySnap(snap, inst){
+  if(!snap) return null;
   var d = snap[inst];
   if(!d) return null;
   var ce = d.ceClass||'', pe = d.peClass||'';
@@ -2226,8 +2262,8 @@ function renderSetupTFVerdict(){
     return s.type === 'live' && s.date === todayStr;
   });
   /* sessionLog is newest-first, so [0..N-1] = last N minutes */
-  var window = todaySnaps.slice(0, N);
-  var have = window.length;
+  var snapWindow = todaySnaps.slice(0, N);
+  var have = snapWindow.length;
 
   ['nifty','sensex'].forEach(function(inst){
     var boxEl  = document.getElementById('tf_setup_'+inst);
@@ -2242,11 +2278,12 @@ function renderSetupTFVerdict(){
     for(var i=0;i<N;i++){
       var dot = document.createElement('div');
       dot.className = 'tf-dot';
-      if(i < window.length){
-        var sc = classifySnap(window[i], inst);
+      if(i < snapWindow.length){
+        var sc = classifySnap(snapWindow[i], inst);
         if(sc){
-          /* Newest snap is window[0] so we reverse display left=oldest */
-          var sc2 = classifySnap(window[N-1-i < window.length ? window[N-1-i] : window[i]], inst);
+          /* Newest snap is snapWindow[0] so we reverse display left=oldest */
+          var revIdx = N-1-i;
+          var sc2 = classifySnap(snapWindow[revIdx < snapWindow.length ? revIdx : i], inst);
           if(sc2){
             if(sc2.ceScore > sc2.peScore)      dot.className='tf-dot go';
             else if(sc2.peScore > sc2.ceScore) dot.className='tf-dot skip';
@@ -2267,7 +2304,7 @@ function renderSetupTFVerdict(){
 
     /* We have N snapshots — average the scores */
     var totalCE = 0, totalPE = 0, goCount=0, skipCount=0, cautionCount=0;
-    window.forEach(function(s){
+    snapWindow.forEach(function(s){
       var sc = classifySnap(s, inst);
       if(!sc) return;
       totalCE += sc.ceScore; totalPE += sc.peScore;
@@ -2348,10 +2385,57 @@ setInterval(function(){
 },30000);
 
 /* ── Helpers ───────────────────────────────────────────────────── */
+/* ── Rate-limit cooldown ───────────────────────────────────────── */
+var COOLDOWN_MS = 60000; /* 60 seconds */
+var _cooldownTimers = {}; /* key → { until, interval } */
+var _btnOriginalText = {}; /* key → original label */
+
+function startCooldown(btnIds){
+  btnIds.forEach(function(id){
+    var el = document.getElementById(id);
+    if(!el) return;
+    /* Store original label once */
+    if(!_btnOriginalText[id]) _btnOriginalText[id] = el.textContent || el.innerHTML;
+    /* Clear any existing cooldown for this button */
+    if(_cooldownTimers[id]){
+      clearInterval(_cooldownTimers[id].interval);
+      delete _cooldownTimers[id];
+    }
+    var until = Date.now() + COOLDOWN_MS;
+    el.disabled = true;
+    function tick(){
+      var remaining = Math.ceil((until - Date.now()) / 1000);
+      if(remaining <= 0){
+        clearInterval(_cooldownTimers[id] && _cooldownTimers[id].interval);
+        delete _cooldownTimers[id];
+        el.disabled = false;
+        /* Restore original label */
+        if(el.tagName === 'BUTTON'){
+          if(id === 'refresh_btn') el.innerHTML = '&#8635;';
+          else el.textContent = _btnOriginalText[id];
+        }
+        return;
+      }
+      if(id === 'refresh_btn') el.innerHTML = remaining+'s';
+      else el.textContent = remaining+'s';
+    }
+    tick();
+    _cooldownTimers[id] = { until: until, interval: setInterval(tick, 1000) };
+  });
+}
+
 function setLoading(s){
   document.getElementById('spinner').style.display=s?'inline-block':'none';
   ['fetch_btn','refresh_btn','nifty_fetch_btn','sensex_fetch_btn'].forEach(function(id){
-    var el=document.getElementById(id);if(el)el.disabled=s;
+    var el=document.getElementById(id);
+    if(!el) return;
+    /* Only disable/enable if not already in cooldown */
+    if(s){
+      el.disabled=true;
+    } else {
+      /* Only re-enable if cooldown has expired */
+      if(!_cooldownTimers[id]) el.disabled=false;
+    }
   });
 }
 function showErr(m){var e=document.getElementById('err_msg');e.textContent=m;e.style.display='block';}
@@ -2452,8 +2536,50 @@ function retryFetch(){
 }
 
 /* ── Init ──────────────────────────────────────────────────────── */
+/* ── Global JS error catcher — helps diagnose unexpected crashes ── */
+window.onerror=function(msg,src,line,col,err){
+  /* Only log — never show to the trader unless it's a fetch error */
+  var isFetchErr=/fetch|network|HTTP|401|403|404|429|500|502|503|504|timeout/i.test(msg||'');
+  if(!isFetchErr){
+    log('⚠️ JS error (line '+line+'): '+msg);
+    console.error('Global JS error at line '+line+':', err||msg);
+  }
+  return false; /* don't suppress browser's own error handling */
+};
+
+/* ── Remember Client ID ────────────────────────────────────────── */
+var CID_KEY='asura_cid';
+function onRememberCID(){
+  var cb=document.getElementById('remember_cid');
+  var cid=document.getElementById('client_id').value.trim();
+  if(cb.checked){
+    if(cid){try{localStorage.setItem(CID_KEY,cid);}catch(e){}}  /* save current value immediately */
+    document.getElementById('client_id').addEventListener('input',saveCIDIfRemembered);
+  } else {
+    try{localStorage.removeItem(CID_KEY);}catch(e){}
+    document.getElementById('client_id').removeEventListener('input',saveCIDIfRemembered);
+  }
+}
+function saveCIDIfRemembered(){
+  if(document.getElementById('remember_cid').checked){
+    var cid=document.getElementById('client_id').value.trim();
+    try{if(cid)localStorage.setItem(CID_KEY,cid);else localStorage.removeItem(CID_KEY);}catch(e){}
+  }
+}
+function loadSavedCID(){
+  try{
+    var saved=localStorage.getItem(CID_KEY);
+    if(saved){
+      document.getElementById('client_id').value=saved;
+      document.getElementById('remember_cid').checked=true;
+      document.getElementById('client_id').addEventListener('input',saveCIDIfRemembered);
+    }
+  }catch(e){}
+}
+
 window.onload=function(){
   initTheme();
+  loadSavedCID();
   populateSelect('nifty_expiry',getUpcomingDays(2,5),'Nifty');
   populateSelect('sensex_expiry',getUpcomingDays(4,5),'Sensex');
   checkAndAdvanceExpiry(); /* advance if opened post-close on expiry day */
