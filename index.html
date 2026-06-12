@@ -2376,7 +2376,7 @@ function broadcastWidget(){
       data.boxes[key]={verdict:vEl.textContent,sub:sEl.textContent,state:state};
     });
     data.theme = document.body.classList.contains('light') ? 'light' : 'dark';
-    fetch('http://127.0.0.1:53535/update',{
+    fetch('https://127.0.0.1:53535/update',{
       method:'POST',mode:'cors',
       headers:{'Content-Type':'application/json'},
       body:JSON.stringify(data)
