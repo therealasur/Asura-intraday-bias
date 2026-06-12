@@ -1298,8 +1298,8 @@ async function fetchBoth(){
     if(vixGlobal!=null){ vixFetchedAt=Date.now(); updateVIXChip(vixGlobal); }
     /* Run both instruments and collect any errors */
     var fetchResults=await Promise.allSettled([
-      fetchInstrument('nifty',token,clientId),
-      fetchInstrument('sensex',token,clientId)
+      fetchInstrument('nifty',token,clientId,true),
+      fetchInstrument('sensex',token,clientId,true)
     ]);
     /* Check failures using _lastFetchErr — set only when a fetch actually fails */
     var failedInsts=[];
@@ -1360,6 +1360,11 @@ async function fetchBoth(){
 async function fetchInstrument(inst,token,clientId){
   if(!token){token=document.getElementById('access_token').value.trim();clientId=document.getElementById('client_id').value.trim();}
   if(!token||!clientId)return;
+  /* Block standalone calls while fetchBoth is already running — prevents double-fetch */
+  if(_fetchingBoth&&!arguments[3]){
+    log('⏳ '+inst+' fetch skipped — fetchBoth already in progress.');
+    return;
+  }
   /* Only fetch fresh VIX when called standalone (individual Fetch button).
      fetchBoth already fetches VIX before calling this, so skip if vixGlobal
      was updated within the last 10 seconds to avoid 3× VIX calls per cycle. */
@@ -2386,7 +2391,7 @@ setInterval(function(){
 
 /* ── Helpers ───────────────────────────────────────────────────── */
 /* ── Rate-limit cooldown ───────────────────────────────────────── */
-var COOLDOWN_MS = 60000; /* 60 seconds */
+var COOLDOWN_MS = 58000; /* 58s — 2s buffer so auto-refresh always clears cooldown in time */
 var _cooldownTimers = {}; /* key → { until, interval } */
 var _btnOriginalText = {}; /* key → original label */
 
