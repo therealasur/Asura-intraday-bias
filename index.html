@@ -2355,6 +2355,33 @@ function renderSetupTFVerdict(){
   /* Update info text */
   var infoEl = document.getElementById('setup_tf_info');
   infoEl.textContent = 'Avg of last '+have+'/'+N+' market snapshots';
+
+  broadcastWidget();
+}
+
+/* ── Floating widget broadcast ────────────────────────────────────
+   Fire-and-forget POST of the current verdict strip to a local
+   Electron widget (if running). Silently does nothing if not. */
+function broadcastWidget(){
+  try{
+    var data={ts:Date.now(),setupLabel:setupTFMinutes+'M',boxes:{}};
+    ['now_nifty','now_sensex','setup_nifty','setup_sensex'].forEach(function(key){
+      var boxEl=document.getElementById('tf_'+key);
+      var vEl=document.getElementById('tf_'+key+'_v');
+      var sEl=document.getElementById('tf_'+key+'_s');
+      if(!boxEl||!vEl||!sEl) return;
+      var state='collecting';
+      var m=boxEl.className.match(/state-(\w+)/);
+      if(m) state=m[1];
+      data.boxes[key]={verdict:vEl.textContent,sub:sEl.textContent,state:state};
+    });
+    data.theme = document.body.classList.contains('light') ? 'light' : 'dark';
+    fetch('http://127.0.0.1:53535/update',{
+      method:'POST',mode:'cors',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify(data)
+    }).catch(function(){});
+  }catch(e){}
 }
 
 /* Called after every successful live fetch, updates verdict if feature is on */
